@@ -1,0 +1,77 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  FUNCTION_PREFIX: ${{ vars.PROJECT_NAME || 'ingest-pipeline' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Package functions
+        run: |
+          (cd dist/ingest && zip -qr ../ingest.zip .)
+          (cd dist/migrate && zip -qr ../migrate.zip .)
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Update migrate function
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_PREFIX-migrate" \
+            --zip-file fileb://dist/migrate.zip > /dev/null
+          aws lambda wait function-updated --function-name "$FUNCTION_PREFIX-migrate"
+
+      - name: Run database migrations
+        run: |
+          failure=$(aws lambda invoke \
+            --function-name "$FUNCTION_PREFIX-migrate" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            --query FunctionError \
+            --output text \
+            response.json)
+          cat response.json
+          if [ "$failure" != "None" ]; then
+            exit 1
+          fi
+
+      - name: Update ingest function
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_PREFIX-ingest" \
+            --zip-file fileb://dist/ingest.zip > /dev/null
+          aws lambda wait function-updated --function-name "$FUNCTION_PREFIX-ingest"

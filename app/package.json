@@ -1,0 +1,30 @@
+{
+  "name": "serverless-ingest-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ingestion API for device readings on AWS Lambda, S3 and PostgreSQL",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
+    "build": "node build.mjs",
+    "dev": "node dev.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1136.0",
+    "@aws-sdk/client-secrets-manager": "^3.1136.0",
+    "pg": "^8.23.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.163",
+    "@types/node": "^26.6.2",
+    "@types/pg": "^8.23.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}
