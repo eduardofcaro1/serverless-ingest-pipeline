@@ -9,13 +9,28 @@ O projeto reproduz um padrão que construí no trabalho (app mobile → Lambda �
 ```mermaid
 flowchart LR
     client[Dispositivo / App mobile] -->|POST /readings<br/>x-api-key| api[API Gateway<br/>HTTP API]
-    api --> ingest[Lambda: ingest]
-    ingest -->|JSON original| s3[(S3 raw)]
-    ingest -->|linhas normalizadas| rds[(RDS PostgreSQL)]
-    ingest -.->|credenciais| sm[Secrets Manager]
-    migrate[Lambda: migrate] --> rds
-    gh[GitHub Actions] -->|OIDC| migrate
-    gh -->|OIDC| ingest
+
+    subgraph vpc [VPC - subnets privadas, sem rota para a internet]
+        ingest[Lambda: ingest]
+        migrate[Lambda: migrate]
+        rds[(RDS PostgreSQL)]
+        s3ep{{Gateway endpoint<br/>S3}}
+        smep{{Interface endpoint<br/>Secrets Manager}}
+    end
+
+    s3[(S3 raw)]
+    sm[Secrets Manager]
+
+    api --> ingest
+    ingest -->|linhas normalizadas| rds
+    migrate -->|schema| rds
+    ingest -->|JSON original| s3ep --> s3
+    ingest -->|credenciais| smep
+    migrate -->|credenciais| smep
+    smep --> sm
+
+    gh[GitHub Actions] -.->|OIDC: atualiza o código| ingest
+    gh -.->|OIDC: migra o banco| migrate
 ```
 
 Fluxo de uma requisição:
@@ -81,6 +96,16 @@ Corpo da resposta: `{ "received": 1, "inserted": 1, "duplicates": 0 }`
 **Sem chaves AWS de longa duração no GitHub.** O workflow de deploy assume uma role IAM via GitHub OIDC. A role confia apenas na branch `main` deste repositório e só pode atualizar e invocar as duas funções.
 
 **TLS com verificação de certificado.** A conexão com o banco valida o certificado do servidor contra o bundle de CAs do RDS, em vez de desativar a verificação.
+
+### Perguntas que este projeto responde
+
+**Por que TypeScript e não Java?** Minha stack principal é Java, mas para uma função Lambda escolhi Node.js com TypeScript. O runtime inicia mais rápido (cold start menor) e consome menos memória, o que pesa em serverless, onde qualquer invocação pode cair em um ambiente novo. Uma Lambda em Java com Spring Boot precisaria de recursos como SnapStart ou GraalVM para chegar perto disso. O TypeScript ainda entrega tipagem estática, e o Zod valida em tempo de execução os dados que chegam de fora.
+
+**Por que PostgreSQL e não DynamoDB?** Os dados são relacionais e consultados com filtros e agregações por dispositivo, métrica e período, o que o SQL faz bem, com o índice em `(device_id, metric, recorded_at DESC)`. A constraint única da idempotência também é nativa. O DynamoDB seria mais barato e escalaria melhor para volumes muito altos de escrita com padrões de acesso conhecidos, mas exigiria modelar as consultas de antemão. A contrapartida do RDS é o custo fixo por hora e a necessidade de uma VPC.
+
+**Por que VPC endpoints e não um NAT gateway?** A Lambda precisa falar com o banco, que fica na VPC, e também com o S3 e o Secrets Manager. Um NAT gateway resolveria isso, mas tem custo fixo por hora mais o tráfego processado, e abriria uma saída para a internet que a função não precisa. O endpoint do S3 é gratuito. O do Secrets Manager cobra por hora, em geral menos que um NAT, e mantém todo o tráfego dentro da rede da AWS.
+
+**Como a idempotência é garantida?** Cada leitura carrega um UUID gerado pelo cliente (`idempotencyKey`). O banco tem uma constraint única nessa coluna e o insert usa `ON CONFLICT DO NOTHING`, então a garantia fica no banco e vale mesmo com várias Lambdas rodando ao mesmo tempo. Usar um hash do conteúdo seria uma alternativa, mas duas leituras legítimas e idênticas poderiam ser confundidas com um reenvio.
 
 ## Estrutura do repositório
 
